@@ -35,6 +35,7 @@ export interface AxisProps {
   splits?: Axis.Splits;
   values?: Axis.Values;
   isTime?: boolean;
+  elapsedTime?: boolean; // <-- add this
   timeZone?: TimeZone;
   color?: uPlot.Axis.Stroke;
   border?: uPlot.Axis.Border;
@@ -82,6 +83,7 @@ export class UPlotAxisBuilder extends PlotConfigBuilder<AxisProps, Axis> {
       values,
       incrs,
       isTime,
+      elapsedTime = false, // <-- add this
       timeZone,
       theme,
       tickLabelRotation,
@@ -140,7 +142,7 @@ export class UPlotAxisBuilder extends PlotConfigBuilder<AxisProps, Axis> {
       space:
         space ??
         ((self, axisIdx, scaleMin, scaleMax, plotDim) => {
-          return calculateSpace(self, axisIdx, scaleMin, scaleMax, plotDim, formatValue);
+          return calculateSpace(self, axisIdx, scaleMin, scaleMax, plotDim, formatValue, elapsedTime);
         }),
       filter,
       incrs,
@@ -163,15 +165,18 @@ export class UPlotAxisBuilder extends PlotConfigBuilder<AxisProps, Axis> {
 
     if (values) {
       config.values = values;
+    } else if (isTime && elapsedTime) {
+      config.values = formatElapsedTime;
     } else if (formatValue) {
       config.values = (u: uPlot, splits, axisIdx, tickSpace, tickIncr) => {
         let decimals = guessDecimals(roundDecimals(tickIncr, 6));
+
         return splits.map((v) => {
           if (v == null) {
             return null;
-          } else {
-            return formatValue!(v, decimals > 0 ? decimals : undefined);
           }
+
+          return formatValue!(v, decimals > 0 ? decimals : undefined);
         });
       };
     } else if (isTime) {
@@ -195,6 +200,97 @@ export const timeUnitSize = {
   year: 365 * 24 * 60 * 60 * 1000,
 };
 
+function pad2(v: number): string {
+  return String(v).padStart(2, '0');
+}
+
+function getFirstFiniteXValue(self: uPlot): number | undefined {
+  const xValues = self.data?.[0] as Array<number | null | undefined> | undefined;
+
+  return xValues?.find((v): v is number => typeof v === 'number' && Number.isFinite(v));
+}
+
+function getLocalDayStartMs(value: number): number {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+let elapsedAxisZeroMs: number | undefined;
+
+function getElapsedZeroMs(self: uPlot): number {
+  if (elapsedAxisZeroMs != null) {
+    return elapsedAxisZeroMs;
+  }
+
+  const firstX = getFirstFiniteXValue(self);
+
+  if (firstX == null) {
+    const min = self.scales.x?.min;
+
+    if (typeof min === 'number' && min > timeUnitSize.year) {
+      elapsedAxisZeroMs = getLocalDayStartMs(min);
+      return elapsedAxisZeroMs;
+    }
+
+    elapsedAxisZeroMs = 0;
+    return elapsedAxisZeroMs;
+  }
+
+  elapsedAxisZeroMs = firstX > timeUnitSize.year ? getLocalDayStartMs(firstX) : 0;
+  return elapsedAxisZeroMs;
+}
+
+function formatElapsedValue(elapsedMs: number, foundIncr: number): string {
+  const clamped = Math.max(0, elapsedMs);
+
+  const totalHours = Math.floor(clamped / timeUnitSize.hour);
+  const minutes = Math.floor((clamped % timeUnitSize.hour) / timeUnitSize.minute);
+  const seconds = Math.floor((clamped % timeUnitSize.minute) / timeUnitSize.second);
+
+  // 4 fractional digits of seconds. If values are millisecond-based, the 4th digit will naturally be 0.
+  const fractionalSeconds = Math.floor(((clamped % timeUnitSize.second) / timeUnitSize.second) * 10000);
+
+  const hh = String(totalHours).padStart(2, '0');
+  const mm = pad2(minutes);
+  const ss = pad2(seconds);
+
+  if (foundIncr < timeUnitSize.second) {
+    return `${hh}:${mm}:${ss}.${String(fractionalSeconds).padStart(4, '0')}`;
+  }
+
+  if (foundIncr < timeUnitSize.minute) {
+    return `${hh}:${mm}:${ss}`;
+  }
+
+  return `${hh}:${mm}`;
+}
+
+/** Format elapsed-time axis ticks without 24-hour wrapping */
+export function formatElapsedTime(
+  self: uPlot,
+  splits: number[],
+  _axisIdx: number,
+  _foundSpace: number,
+  foundIncr: number
+): string[] {
+  const zeroMs = getElapsedZeroMs(self);
+
+  return splits.map((v) => {
+    if (v == null) {
+      return '';
+    }
+
+    const elapsedMs = v - zeroMs;
+
+    if (elapsedMs < 0) {
+      return '';
+    }
+
+    return formatElapsedValue(elapsedMs, foundIncr);
+  });
+}
+
 /** Format time axis ticks */
 export function formatTime(
   self: uPlot,
@@ -209,7 +305,7 @@ export function formatTime(
   const range = (scale?.max ?? 0) - (scale?.min ?? 0);
   const yearRoundedToDay = Math.round(timeUnitSize.year / timeUnitSize.day) * timeUnitSize.day;
   const incrementRoundedToDay = Math.round(foundIncr / timeUnitSize.day) * timeUnitSize.day;
-
+ 
   let format = systemDateFormats.interval.year;
 
   if (foundIncr < timeUnitSize.second) {
@@ -238,7 +334,8 @@ function calculateSpace(
   scaleMin: number,
   scaleMax: number,
   plotDim: number,
-  formatValue?: (value: unknown) => string
+  formatValue?: (value: unknown) => string,
+  elapsedTime = false
 ): number {
   const axis = self.axes[axisIdx];
   const scale = self.scales[axis.scale!];
@@ -257,7 +354,9 @@ function calculateSpace(
 
   let sample = '';
 
-  if (scale.time) {
+  if (scale.time && elapsedTime) {
+  sample = formatElapsedTime(self, [scaleMax], axisIdx, X_TICK_SPACING_NORMAL, increment)[0];
+  } else if (scale.time) {
     sample = formatTime(self, [bigValue], axisIdx, X_TICK_SPACING_NORMAL, increment)[0];
   } else if (formatValue != null) {
     sample = formatValue(bigValue);

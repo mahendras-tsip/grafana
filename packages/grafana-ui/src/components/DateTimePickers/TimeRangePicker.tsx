@@ -7,12 +7,10 @@ import { memo, createRef, useState, useEffect, type JSX } from 'react';
 import {
   rangeUtil,
   type GrafanaTheme2,
-  dateTimeFormat,
   timeZoneFormatUserFriendly,
   type TimeOption,
   type TimeRange,
   type TimeZone,
-  dateMath,
   getTimeZoneInfo,
 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
@@ -25,7 +23,7 @@ import { getModalStyles } from '../Modal/getModalStyles';
 import { getPortalContainer } from '../Portal/Portal';
 import { ToolbarButton } from '../ToolbarButton/ToolbarButton';
 import { Tooltip } from '../Tooltip/Tooltip';
-
+// import { formatElapsedTimeRangeValue, getLocalDayStartMs } from './TimeRangePicker/mapper';
 import { TimePickerContent } from './TimeRangePicker/TimePickerContent';
 import { TimeZoneDescription } from './TimeZonePicker/TimeZoneDescription';
 import { type WeekStart } from './WeekStartPicker';
@@ -74,6 +72,54 @@ export interface State {
   isOpen: boolean;
 }
 
+let elapsedTimePickerZeroMs: number | undefined;
+
+function getElapsedTimePickerZeroMs(value: TimeRange): number {
+  if (elapsedTimePickerZeroMs == null) {
+    const fromMs = value.from.valueOf();
+    const date = new Date(fromMs);
+    date.setHours(0, 0, 0, 0);
+    elapsedTimePickerZeroMs = date.getTime();
+  }
+
+  return elapsedTimePickerZeroMs;
+}
+
+// function getLocalDayStartMs(value: number): number {
+//   const date = new Date(value);
+//   date.setHours(0, 0, 0, 0);
+//   return date.getTime();
+// }
+
+function pad2(v: number): string {
+  return String(v).padStart(2, '0');
+}
+
+function formatElapsedTimeRangeValue(value: number, zeroMs: number): string {
+  const elapsedMs = Math.max(0, value - zeroMs);
+
+  const totalHours = Math.floor(elapsedMs / (60 * 60 * 1000));
+  const minutes = Math.floor((elapsedMs % (60 * 60 * 1000)) / (60 * 1000));
+  const seconds = Math.floor((elapsedMs % (60 * 1000)) / 1000);
+
+  return `${pad2(totalHours)}:${pad2(minutes)}:${pad2(seconds)}`;
+}
+
+function getElapsedTimeRangeParts(value: TimeRange): { from: string; to: string } {
+  const fromMs = value.from.valueOf();
+  const toMs = value.to.valueOf();
+  const zeroMs = getElapsedTimePickerZeroMs(value);
+
+  return {
+    from: formatElapsedTimeRangeValue(fromMs, zeroMs),
+    to: formatElapsedTimeRangeValue(toMs, zeroMs),
+  };
+}
+
+function formatElapsedTimeRange(value: TimeRange): string {
+  const range = getElapsedTimeRangeParts(value);
+  return `${range.from} to ${range.to}`;
+}
 /**
  * https://developers.grafana.com/ui/latest/index.html?path=/docs/date-time-pickers-timerangepicker--docs
  */
@@ -268,17 +314,20 @@ export const TimePickerTooltip = ({ timeRange, timeZone }: { timeRange: TimeRang
   const styles = useStyles2(getLabelStyles);
   const now = Date.now();
 
-  // Get timezone info only if timeZone is provided
   const timeZoneInfo = timeZone ? getTimeZoneInfo(timeZone, now) : undefined;
+
+  const zeroMs = getElapsedTimePickerZeroMs(timeRange);
+  const elapsedFrom = formatElapsedTimeRangeValue(timeRange.from.valueOf(), zeroMs);
+  const elapsedTo = formatElapsedTimeRangeValue(timeRange.to.valueOf(), zeroMs);
 
   return (
     <>
       <div className="text-center">
-        {dateTimeFormat(timeRange.from, { timeZone })}
+        {elapsedFrom}
         <div className="text-center">
           <Trans i18nKey="time-picker.range-picker.to">to</Trans>
         </div>
-        {dateTimeFormat(timeRange.to, { timeZone })}
+        {elapsedTo}
       </div>
       <div className={styles.container}>
         <span className={styles.utc}>{timeZoneFormatUserFriendly(timeZone)}</span>
@@ -307,12 +356,8 @@ export const TimePickerButtonLabel = memo<LabelProps>(({ hideText, value, timeZo
 
 TimePickerButtonLabel.displayName = 'TimePickerButtonLabel';
 
-const formattedRange = (value: TimeRange, timeZone?: TimeZone, quickRanges?: TimeOption[]) => {
-  const adjustedTimeRange = {
-    to: dateMath.isMathString(value.raw.to) ? value.raw.to : value.to,
-    from: dateMath.isMathString(value.raw.from) ? value.raw.from : value.from,
-  };
-  return rangeUtil.describeTimeRange(adjustedTimeRange, timeZone, quickRanges);
+const formattedRange = (value: TimeRange, _timeZone?: TimeZone, _quickRanges?: TimeOption[]) => {
+  return formatElapsedTimeRange(value);
 };
 
 const getStyles = (theme: GrafanaTheme2) => {

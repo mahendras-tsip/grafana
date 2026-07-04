@@ -23,6 +23,7 @@ import {
   SpecialValueMatch,
 } from '@grafana/data';
 import { maybeSortFrame, NULL_RETAIN } from '@grafana/data/internal';
+import { type default as uPlot } from 'uplot';
 import { t } from '@grafana/i18n';
 import {
   type VizLegendOptions,
@@ -73,6 +74,56 @@ const defaultConfig: PanelFieldConfig = {
   lineWidth: 0,
   fillOpacity: 80,
 };
+
+type NumericRange = [number | null, number | null];
+
+function getFirstFiniteXValue(u: uPlot): number | undefined {
+  const xValues = u.data?.[0] as Array<number | null | undefined> | undefined;
+
+  return xValues?.find((v): v is number => typeof v === 'number' && Number.isFinite(v));
+}
+
+function getLocalDayStartMs(value: number): number {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+let elapsedTimelineZeroMs: number | undefined;
+
+function getElapsedZeroMs(u: uPlot): number {
+  if (elapsedTimelineZeroMs != null) {
+    return elapsedTimelineZeroMs;
+  }
+
+  const firstX = getFirstFiniteXValue(u);
+
+  if (firstX == null) {
+    elapsedTimelineZeroMs = 0;
+    return elapsedTimelineZeroMs;
+  }
+
+  elapsedTimelineZeroMs = getLocalDayStartMs(firstX);
+  return elapsedTimelineZeroMs;
+}
+
+function clampElapsedRangeToZero(u: uPlot, range: NumericRange): NumericRange {
+  const [min, max] = range;
+
+  if (min == null || max == null) {
+    return range;
+  }
+
+  const zeroMs = getElapsedZeroMs(u);
+
+  if (min >= zeroMs) {
+    return range;
+  }
+
+  const span = max - min;
+
+  return [zeroMs, zeroMs + span];
+}
 
 /** Checks if a mapped value of the specified type exists for the given field */
 export const hasSpecialMappedValue = (field: Field, match: SpecialValueMatch): boolean =>
@@ -157,7 +208,12 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn<UPlotConfigOptions> = (
     orientation: ScaleOrientation.Horizontal,
     direction: ScaleDirection.Right,
     range: (u) => {
+      const clampRange = (range: NumericRange): NumericRange => {
+        return mode === TimelineMode.Changes ? clampElapsedRangeToZero(u, range) : range;
+      };
+
       const state = builder.getState();
+
       if (state.isPanning) {
         if (state.isTimeRangePending) {
           const propsRange = coreConfig.xRange(u);
@@ -172,14 +228,15 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn<UPlotConfigOptions> = (
 
             if (timeRangeHasUpdated) {
               builder.setState({ isPanning: false });
-              return propsRange;
+              return clampRange(propsRange);
             }
           }
         }
 
-        return [state.min, state.max];
+        return clampRange([state.min, state.max]);
       }
-      return coreConfig.xRange(u);
+
+      return clampRange(coreConfig.xRange(u));
     },
   });
 
@@ -206,6 +263,9 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn<UPlotConfigOptions> = (
       ? (v, decimals) => xField.display!(v, decimals).text
       : undefined,
     ...xAxisConfig,
+
+    // Use elapsed-time labels only for State timeline / changes mode
+    elapsedTime: mode === TimelineMode.Changes,
   });
 
   const yCustomConfig = frame.fields[1].config.custom;
