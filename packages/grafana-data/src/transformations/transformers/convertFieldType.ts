@@ -14,6 +14,76 @@ export interface ConvertFieldTypeTransformerOptions {
   conversions: ConvertFieldTypeOptions[];
 }
 
+function isElapsedTimeModeEnabled(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+
+  return params.get('elapsedTimeMode') === 'true' || params.get('var-elapsedTimeMode') === 'true';
+}
+
+function getElapsedZeroMsFromUrl(): number | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const rawZeroMs = params.get('elapsedZeroMs') ?? params.get('var-elapsedZeroMs');
+
+  if (!rawZeroMs) {
+    return undefined;
+  }
+
+  const zeroMs = Number(rawZeroMs);
+
+  return Number.isFinite(zeroMs) ? zeroMs : undefined;
+}
+
+const elapsedDurationRegex = /^(\d+):([0-5]\d):([0-5]\d)(?:\.(\d{1,4}))?$/;
+
+function parseElapsedDurationMs(value: unknown): number | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const match = value.trim().match(elapsedDurationRegex);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3]);
+  const fraction = match[4] ?? '';
+
+  const milliseconds = Number((fraction + '000').slice(0, 3));
+
+  return hours * 60 * 60 * 1000 + minutes * 60 * 1000 + seconds * 1000 + milliseconds;
+}
+
+function parseElapsedTimestampToEpochMs(value: unknown): number | undefined {
+  if (!isElapsedTimeModeEnabled()) {
+    return undefined;
+  }
+
+  const zeroMs = getElapsedZeroMsFromUrl();
+
+  if (zeroMs == null) {
+    return undefined;
+  }
+
+  const elapsedMs = parseElapsedDurationMs(value);
+
+  if (elapsedMs == null) {
+    return undefined;
+  }
+
+  return zeroMs + elapsedMs;
+}
+
 export interface ConvertFieldTypeOptions {
   /**
    * The field to convert field type
@@ -126,17 +196,25 @@ const iso8601Regex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3,})?(?:Z|[-+]
  * @internal
  */
 export function fieldToTimeField(field: Field, dateFormat?: string): Field {
-  let opts = dateFormat ? { format: dateFormat } : undefined;
+  const opts = dateFormat ? { format: dateFormat } : undefined;
 
   const timeValues = field.values.slice();
 
-  let firstDefined = timeValues.find((v) => v != null);
+  const firstDefined = timeValues.find((v) => v != null);
   const convertToMS = typeof firstDefined === 'number' && dateFormat === 'X';
   const isISO8601 = typeof firstDefined === 'string' && iso8601Regex.test(firstDefined);
 
   for (let t = 0; t < timeValues.length; t++) {
     if (timeValues[t]) {
-      let parsed = isISO8601 ? Date.parse(timeValues[t]) : dateTimeParse(timeValues[t], opts).valueOf();
+      const elapsedTime = parseElapsedTimestampToEpochMs(timeValues[t]);
+
+      if (elapsedTime != null) {
+        timeValues[t] = elapsedTime;
+        continue;
+      }
+
+      const parsed = isISO8601 ? Date.parse(timeValues[t]) : dateTimeParse(timeValues[t], opts).valueOf();
+
       if (Number.isFinite(parsed)) {
         timeValues[t] = convertToMS ? parsed * 1000 : parsed;
       } else {

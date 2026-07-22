@@ -7,12 +7,12 @@ import { memo, createRef, useState, useEffect, type JSX } from 'react';
 import {
   rangeUtil,
   type GrafanaTheme2,
+  dateTime,
   dateTimeFormat,
   timeZoneFormatUserFriendly,
   type TimeOption,
   type TimeRange,
   type TimeZone,
-  dateMath,
   getTimeZoneInfo,
 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
@@ -27,6 +27,7 @@ import { ToolbarButton } from '../ToolbarButton/ToolbarButton';
 import { Tooltip } from '../Tooltip/Tooltip';
 
 import { TimePickerContent } from './TimeRangePicker/TimePickerContent';
+import { mapRangeToTimeOption } from './TimeRangePicker/mapper';
 import { TimeZoneDescription } from './TimeZonePicker/TimeZoneDescription';
 import { type WeekStart } from './WeekStartPicker';
 import { getQuickOptions } from './options';
@@ -70,6 +71,167 @@ export interface TimeRangePickerProps {
   weekStart?: WeekStart;
 }
 
+function isElapsedTimeModeEnabled(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+
+  return params.get('elapsedTimeMode') === 'true' || params.get('var-elapsedTimeMode') === 'true';
+}
+
+function getElapsedZeroMsFromUrl(): number | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const rawZeroMs = params.get('elapsedZeroMs') ?? params.get('var-elapsedZeroMs');
+
+  if (!rawZeroMs) {
+    return undefined;
+  }
+
+  const zeroMs = Number(rawZeroMs);
+  return Number.isFinite(zeroMs) ? zeroMs : undefined;
+}
+
+function getLocalDayStartMs(value: number): number {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function getElapsedTimePickerZeroMs(value: TimeRange): number {
+  return getElapsedZeroMsFromUrl() ?? getLocalDayStartMs(value.from.valueOf());
+}
+
+function pad2(v: number): string {
+  return String(v).padStart(2, '0');
+}
+
+function pad4(v: number): string {
+  return String(v).padStart(4, '0');
+}
+
+// function formatElapsedTimeRangeValue(value: number, zeroMs: number): string {
+//   const elapsedMs = Math.max(0, value - zeroMs);
+
+//   const totalHours = Math.floor(elapsedMs / (60 * 60 * 1000));
+//   const minutes = Math.floor((elapsedMs % (60 * 60 * 1000)) / (60 * 1000));
+//   const seconds = Math.floor((elapsedMs % (60 * 1000)) / 1000);
+//   const fractionalSeconds = Math.floor(((elapsedMs % 1000) / 1000) * 10000);
+
+//   return `${String(totalHours).padStart(2, '0')}:${pad2(minutes)}:${pad2(seconds)}.${pad4(fractionalSeconds)}`;
+// }
+
+function formatElapsedTimeRangeValue(value: number, zeroMs: number): string {
+  if (!Number.isFinite(value) || !Number.isFinite(zeroMs)) {
+    return 'Invalid date';
+  }
+
+  const elapsedMs = Math.max(0, value - zeroMs);
+
+  const totalHours = Math.floor(elapsedMs / (60 * 60 * 1000));
+  const minutes = Math.floor((elapsedMs % (60 * 60 * 1000)) / (60 * 1000));
+  const seconds = Math.floor((elapsedMs % (60 * 1000)) / 1000);
+  const fractionalSeconds = Math.floor(((elapsedMs % 1000) / 1000) * 10000);
+
+  return `${String(totalHours).padStart(2, '0')}:${pad2(minutes)}:${pad2(seconds)}.${pad4(fractionalSeconds)}`;
+}
+
+function getNumberParamFromUrl(name: string): number | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
+  const rawValue = new URLSearchParams(window.location.search).get(name);
+
+  if (!rawValue) {
+    return undefined;
+  }
+
+  const value = Number(rawValue);
+
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function formatElapsedTimeRange(value: TimeRange): string {
+  const zeroMs = getElapsedTimePickerZeroMs(value);
+
+  let fromMs = value.from.valueOf();
+  let toMs = value.to.valueOf();
+
+  if (!Number.isFinite(fromMs)) {
+    fromMs = getNumberParamFromUrl('from') ?? NaN;
+  }
+
+  if (!Number.isFinite(toMs)) {
+    toMs = getNumberParamFromUrl('to') ?? NaN;
+  }
+
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return 'Invalid date';
+  }
+
+  return `${formatElapsedTimeRangeValue(fromMs, zeroMs)} to ${formatElapsedTimeRangeValue(toMs, zeroMs)}`;
+}
+
+// function formatElapsedTimeRange(value: TimeRange): string {
+//   const fromMs = value.from.valueOf();
+//   const toMs = value.to.valueOf();
+//   const zeroMs = getElapsedTimePickerZeroMs(value);
+
+//   return `${formatElapsedTimeRangeValue(fromMs, zeroMs)} to ${formatElapsedTimeRangeValue(toMs, zeroMs)}`;
+// }
+
+function clampElapsedTimeRangeToZero(value: TimeRange): TimeRange {
+  if (!isElapsedTimeModeEnabled()) {
+    return value;
+  }
+
+  const zeroMs = getElapsedZeroMsFromUrl();
+
+  if (zeroMs == null) {
+    return value;
+  }
+
+  const fromMs = value.from.valueOf();
+  const toMs = value.to.valueOf();
+
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return value;
+  }
+
+  const span = toMs - fromMs;
+
+  if (!Number.isFinite(span) || span <= 0) {
+    return value;
+  }
+
+  if (fromMs >= zeroMs) {
+    return value;
+  }
+
+  const clampedFromMs = zeroMs;
+  const clampedToMs = zeroMs + span;
+
+  if (!Number.isFinite(clampedFromMs) || !Number.isFinite(clampedToMs)) {
+    return value;
+  }
+
+  return {
+    ...value,
+    from: dateTime(clampedFromMs),
+    to: dateTime(clampedToMs),
+    raw: {
+      from: clampedFromMs.toString(),
+      to: clampedToMs.toString(),
+    },
+  };
+}
+
 export interface State {
   isOpen: boolean;
 }
@@ -111,9 +273,38 @@ export function TimeRangePicker(props: TimeRangePickerProps) {
   });
 
   const onChange = (timeRange: TimeRange) => {
-    onChangeWithSync(timeRange);
+    onChangeWithSync(clampElapsedTimeRangeToZero(timeRange));
     setOpen(false);
   };
+
+  // useEffect(() => {
+  //   if (!isElapsedTimeModeEnabled()) {
+  //     return;
+  //   }
+
+  //   const zeroMs = getElapsedZeroMsFromUrl();
+
+  //   if (zeroMs == null) {
+  //     return;
+  //   }
+
+  //   const fromMs = value.from.valueOf();
+  //   const toMs = value.to.valueOf();
+
+  //   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+  //     return;
+  //   }
+
+  //   if (fromMs >= zeroMs) {
+  //     return;
+  //   }
+
+  //   const clampedValue = clampElapsedTimeRangeToZero(value);
+
+  //   if (clampedValue.from.valueOf() !== fromMs || clampedValue.to.valueOf() !== toMs) {
+  //     onChangeWithSync(clampedValue);
+  //   }
+  // }, [value, onChangeWithSync]);
 
   useEffect(() => {
     if (isOpen && onToolbarTimePickerClick) {
@@ -155,11 +346,84 @@ export function TimeRangePicker(props: TimeRangePickerProps) {
 
   const currentTimeRange = formattedRange(value, timeZone, quickRanges);
 
+  const onMoveBackwardClamped = () => {
+    if (!isElapsedTimeModeEnabled()) {
+      onMoveBackward();
+      return;
+    }
+
+    const zeroMs = getElapsedZeroMsFromUrl();
+
+    if (zeroMs == null) {
+      onMoveBackward();
+      return;
+    }
+
+    const fromMs = value.from.valueOf();
+
+    if (!Number.isFinite(fromMs)) {
+      return;
+    }
+
+    if (fromMs <= zeroMs) {
+      return;
+    }
+
+    onMoveBackward();
+  };
+
+  const onZoomClamped = () => {
+    if (!isElapsedTimeModeEnabled()) {
+      onZoom();
+      return;
+    }
+
+    const zeroMs = getElapsedZeroMsFromUrl();
+
+    if (zeroMs == null) {
+      onZoom();
+      return;
+    }
+
+    const fromMs = value.from.valueOf();
+    const toMs = value.to.valueOf();
+
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+      return;
+    }
+
+    const span = toMs - fromMs;
+
+    if (!Number.isFinite(span) || span <= 0) {
+      return;
+    }
+
+    // Same basic behavior as zoom-out: expand range around current range
+    const nextSpan = span * 2;
+    const nextFromMs = fromMs - span / 2;
+
+    const clampedFromMs = Math.max(nextFromMs, zeroMs);
+    const clampedToMs = clampedFromMs + nextSpan;
+
+    onChangeWithSync(
+      clampElapsedTimeRangeToZero({
+        ...value,
+        from: dateTime(clampedFromMs),
+        to: dateTime(clampedToMs),
+        raw: {
+          from: clampedFromMs.toString(),
+          to: clampedToMs.toString(),
+        },
+      })
+    );
+  };
+
   return (
     <ButtonGroup className={styles.container}>
       <ToolbarButton
         variant={variant}
-        onClick={onMoveBackward}
+        // onClick={onMoveBackward}
+        onClick={onMoveBackwardClamped}
         icon="angle-double-left"
         type="button"
         iconSize="xl"
@@ -234,7 +498,8 @@ export function TimeRangePicker(props: TimeRangePickerProps) {
       <Tooltip content={ZoomOutTooltip} placement="bottom">
         <ToolbarButton
           aria-label={t('time-picker.range-picker.zoom-out-button', 'Zoom out time range')}
-          onClick={onZoom}
+          // onClick={onZoom}
+          onClick={onZoomClamped}
           icon="search-minus"
           type="button"
           data-testid={selectors.components.TimePicker.zoomOut}
@@ -308,11 +573,19 @@ export const TimePickerButtonLabel = memo<LabelProps>(({ hideText, value, timeZo
 TimePickerButtonLabel.displayName = 'TimePickerButtonLabel';
 
 const formattedRange = (value: TimeRange, timeZone?: TimeZone, quickRanges?: TimeOption[]) => {
-  const adjustedTimeRange = {
-    to: dateMath.isMathString(value.raw.to) ? value.raw.to : value.to,
-    from: dateMath.isMathString(value.raw.from) ? value.raw.from : value.from,
-  };
-  return rangeUtil.describeTimeRange(adjustedTimeRange, timeZone, quickRanges);
+  if (isElapsedTimeModeEnabled()) {
+    return formatElapsedTimeRange(value);
+  }
+
+  const matchingOption = quickRanges?.find((option) => {
+    return option.from === value.raw.from && option.to === value.raw.to;
+  });
+
+  if (matchingOption) {
+    return matchingOption.display;
+  }
+
+  return mapRangeToTimeOption(value, timeZone).display;
 };
 
 const getStyles = (theme: GrafanaTheme2) => {
