@@ -221,13 +221,16 @@ function clampElapsedTimeRangeToZero(value: TimeRange): TimeRange {
     return value;
   }
 
+  const clampedFrom = dateTime(clampedFromMs);
+  const clampedTo = dateTime(clampedToMs);
+
   return {
     ...value,
-    from: dateTime(clampedFromMs),
-    to: dateTime(clampedToMs),
+    from: clampedFrom,
+    to: clampedTo,
     raw: {
-      from: clampedFromMs.toString(),
-      to: clampedToMs.toString(),
+      from: clampedFrom,
+      to: clampedTo,
     },
   };
 }
@@ -360,16 +363,43 @@ export function TimeRangePicker(props: TimeRangePickerProps) {
     }
 
     const fromMs = value.from.valueOf();
+    const toMs = value.to.valueOf();
 
-    if (!Number.isFinite(fromMs)) {
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
       return;
     }
 
-    if (fromMs <= zeroMs) {
+    const span = toMs - fromMs;
+
+    if (!Number.isFinite(span) || span <= 0) {
       return;
     }
 
-    onMoveBackward();
+    // Grafana's normal back button shifts by half of the current range.
+    const shiftMs = span / 2;
+
+    let nextFromMs = fromMs - shiftMs;
+    let nextToMs = toMs - shiftMs;
+
+    // If moving back crosses elapsed zero, clamp to 00:00
+    // and preserve the full current span.
+    if (nextFromMs < zeroMs) {
+      nextFromMs = zeroMs;
+      nextToMs = zeroMs + span;
+    }
+
+    const nextFrom = dateTime(nextFromMs);
+    const nextTo = dateTime(nextToMs);
+
+    onChangeWithSync({
+      ...value,
+      from: nextFrom,
+      to: nextTo,
+      raw: {
+        from: nextFrom,
+        to: nextTo,
+      },
+    });
   };
 
   const onZoomClamped = () => {
@@ -405,17 +435,18 @@ export function TimeRangePicker(props: TimeRangePickerProps) {
     const clampedFromMs = Math.max(nextFromMs, zeroMs);
     const clampedToMs = clampedFromMs + nextSpan;
 
-    onChangeWithSync(
-      clampElapsedTimeRangeToZero({
-        ...value,
-        from: dateTime(clampedFromMs),
-        to: dateTime(clampedToMs),
-        raw: {
-          from: clampedFromMs.toString(),
-          to: clampedToMs.toString(),
-        },
-      })
-    );
+    const clampedFrom = dateTime(clampedFromMs);
+    const clampedTo = dateTime(clampedToMs);
+
+    onChangeWithSync({
+      ...value,
+      from: clampedFrom,
+      to: clampedTo,
+      raw: {
+        from: clampedFrom,
+        to: clampedTo,
+      },
+    });
   };
 
   return (
@@ -561,11 +592,11 @@ export const TimePickerButtonLabel = memo<LabelProps>(({ hideText, value, timeZo
   if (hideText) {
     return null;
   }
-
+  const isElapsed = isElapsedTimeModeEnabled();
   return (
     <span className={styles.container} aria-live="polite" aria-atomic="true">
       <span>{formattedRange(value, timeZone, quickRanges)}</span>
-      <span className={styles.utc}>{rangeUtil.describeTimeRangeAbbreviation(value, timeZone)}</span>
+      {!isElapsed && <span className={styles.utc}>{rangeUtil.describeTimeRangeAbbreviation(value, timeZone)}</span>}
     </span>
   );
 });
