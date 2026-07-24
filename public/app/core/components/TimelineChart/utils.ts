@@ -115,22 +115,20 @@ function getLocalDayStartMs(value: number): number {
   return date.getTime();
 }
 
-let elapsedTimelineZeroMs: number | undefined;
-
 function getElapsedZeroMs(u: uPlot): number {
-  if (elapsedTimelineZeroMs != null) {
-    return elapsedTimelineZeroMs;
+  const zeroMs = getElapsedZeroMsFromUrl();
+
+  if (zeroMs != null) {
+    return zeroMs;
   }
 
   const firstX = getFirstFiniteXValue(u);
 
   if (firstX == null) {
-    elapsedTimelineZeroMs = 0;
-    return elapsedTimelineZeroMs;
+    return 0;
   }
 
-  elapsedTimelineZeroMs = getLocalDayStartMs(firstX);
-  return elapsedTimelineZeroMs;
+  return getLocalDayStartMs(firstX);
 }
 
 function clampElapsedRangeToZero(u: uPlot, range: NumericRange): NumericRange {
@@ -235,7 +233,7 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn<UPlotConfigOptions> = (
     direction: ScaleDirection.Right,
     range: (u) => {
       const clampRange = (range: NumericRange): NumericRange => {
-        return mode === TimelineMode.Changes ? clampElapsedRangeToZero(u, range) : range;
+        return mode === TimelineMode.Changes && isElapsedTimeModeEnabled() ? clampElapsedRangeToZero(u, range) : range;
       };
 
       const state = builder.getState();

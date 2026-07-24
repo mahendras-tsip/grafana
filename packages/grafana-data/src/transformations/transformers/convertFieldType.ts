@@ -24,13 +24,18 @@ function isElapsedTimeModeEnabled(): boolean {
   return params.get('elapsedTimeMode') === 'true' || params.get('var-elapsedTimeMode') === 'true';
 }
 
-function getElapsedZeroMsFromUrl(): number | undefined {
+function getElapsedParseZeroMsFromUrl(): number | undefined {
   if (typeof window === 'undefined') {
     return undefined;
   }
 
   const params = new URLSearchParams(window.location.search);
-  const rawZeroMs = params.get('elapsedZeroMs') ?? params.get('var-elapsedZeroMs');
+
+  const rawZeroMs =
+    params.get('elapsedParseZeroMs') ??
+    params.get('var-elapsedParseZeroMs') ??
+    params.get('elapsedZeroMs') ??
+    params.get('var-elapsedZeroMs');
 
   if (!rawZeroMs) {
     return undefined;
@@ -69,7 +74,7 @@ function parseElapsedTimestampToEpochMs(value: unknown): number | undefined {
     return undefined;
   }
 
-  const zeroMs = getElapsedZeroMsFromUrl();
+  const zeroMs = getElapsedParseZeroMsFromUrl();
 
   if (zeroMs == null) {
     return undefined;
